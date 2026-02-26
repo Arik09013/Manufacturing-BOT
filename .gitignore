@@ -1,0 +1,5 @@
+.env
+vector_db/
+Env1/
+__pycache__/
+.kaggle/
