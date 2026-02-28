@@ -1,5 +1,17 @@
-.env
-vector_db/
-Env1/
+# Python
 __pycache__/
-.kaggle/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+Env/
+Env1/
+
+# Vector database
+vector_db/
+
+# OS
+.DS_Store
+Thumbs.db

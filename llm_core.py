@@ -25,8 +25,8 @@ client = OpenAI(api_key=api_key)  # Pass key to OpenAI client
 # ----------------------------
 # CONFIG
 # ----------------------------
-pdf_folder = "E:/Env1/manufacturing_docs"
-vector_db_dir = "E:/Env1/vector_db"
+pdf_folder = "E:/Ai/manufacturing_docs"
+vector_db_dir = "E:/Ai/vector_db"
 BATCH_SIZE = 500
 
 # ----------------------------
@@ -102,12 +102,19 @@ db = Chroma(
     persist_directory=vector_db_dir
 )
 
-# Add chunks in batches
-for i in tqdm(range(0, len(chunks), BATCH_SIZE)):
-    batch = chunks[i:i + BATCH_SIZE]
-    db.add_documents(batch)
+# Only add documents if DB is empty
+if db._collection.count() == 0:
+    print("Creating vector database for first time...")
 
-print("🚀 Vector database ready!")
+    for i in tqdm(range(0, len(chunks), BATCH_SIZE)):
+        batch = chunks[i:i + BATCH_SIZE]
+        db.add_documents(batch)
+
+    db.persist()
+    print("Vector DB created successfully!")
+
+else:
+    print("Vector DB already exists. Skipping embedding.")
 
 # ----------------------------
 # BOT FUNCTION
