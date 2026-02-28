@@ -19,7 +19,7 @@ from langchain.vectorstores import Chroma
 # LOAD API KEY
 # ----------------------------
 load_dotenv()  # Load variables from .env
-api_key = st.secrets["OPENAI_API_KEY"]
+api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)  # Pass key to OpenAI client
 
 # ----------------------------
