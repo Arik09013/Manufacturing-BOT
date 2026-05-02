@@ -1,17 +1,65 @@
+# ------------------------
 # Python
+# ------------------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
+*.so
 
-# Environment
+# ------------------------
+# Virtual environments
+# ------------------------
 .env
+.venv/
+venv/
 Env/
 Env1/
+EnvAI/
 
+# ------------------------
 # Vector database
+# ------------------------
 vector_db/
+chroma_db/
 
-# OS
+# ------------------------
+# Streamlit
+# ------------------------
+.streamlit/
+
+# ------------------------
+# Jupyter Notebook
+# ------------------------
+.ipynb_checkpoints/
+
+# ------------------------
+# Logs
+# ------------------------
+*.log
+
+# ------------------------
+# OS files
+# ------------------------
 .DS_Store
 Thumbs.db
+
+# ------------------------
+# IDE files
+# ------------------------
+.vscode/
+.idea/
+
+# ------------------------
+# Temporary files
+# ------------------------
+temp/
+tmp/
+*.tmp
+
+# ------------------------
+# Model cache (important for HuggingFace)
+# ------------------------
+.cache/
+huggingface_cache/
