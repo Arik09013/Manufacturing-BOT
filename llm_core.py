@@ -4,9 +4,12 @@
 import os
 import re
 import csv
+import json
 from dotenv import load_dotenv
 from tqdm import tqdm
-from openai import OpenAI
+
+from google import genai
+
 from langchain.document_loaders import PyPDFLoader
 from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -17,8 +20,12 @@ from langchain.vectorstores import Chroma
 # LOAD API KEY
 # ----------------------------
 load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
+api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    raise ValueError("❌ GEMINI_API_KEY not found")
+
+client = genai.Client(api_key=api_key)
 
 # ----------------------------
 # CONFIG
@@ -28,63 +35,50 @@ vector_db_dir = "E:/Ai/vector_db"
 BATCH_SIZE = 500
 
 # ----------------------------
-# HELPER FUNCTIONS
+# HELPER
 # ----------------------------
 def auto_compute_numbers(text: str) -> str:
-    """Automatically compute simple numeric expressions like '100 - 90'."""
-    pattern = r'(\d+)\s*-\s*(\d+)'
-    def repl(match):
-        return str(int(match.group(1)) - int(match.group(2)))
-    return re.sub(pattern, repl, text)
-
-def display_answer(answer: str):
-    """Clean, auto-compute, and display answer in Markdown."""
-    from IPython.display import display, Markdown
-    answer = re.sub(r"\\\[|\\\]", "", answer)
-    answer = re.sub(r"\\text\{(.*?)\}", r"\1", answer)
-    answer = answer.replace(" ,", ",").replace("  ", " ")
-    answer = auto_compute_numbers(answer)
-    display(Markdown(f"<div style='background:#f0f0f0;padding:10px;border-radius:8px'>{answer}</div>"))
+    return re.sub(r'(\d+)\s*-\s*(\d+)', lambda m: str(int(m.group(1)) - int(m.group(2))), text)
 
 # ----------------------------
-# LOAD DOCUMENTS
+# LOAD DOCS
 # ----------------------------
 docs = []
 
 if not os.path.exists(pdf_folder):
-    raise FileNotFoundError(f"Folder not found! Create: {pdf_folder}")
-else:
-    print(f"📁 PDF/TXT/CSV folder found: {pdf_folder}")
+    raise FileNotFoundError(f"{pdf_folder} not found")
+
+print("📁 Loading documents...")
 
 for file in os.listdir(pdf_folder):
-    file_path = os.path.join(pdf_folder, file)
+    path = os.path.join(pdf_folder, file)
+
     if file.endswith(".pdf"):
-        loader = PyPDFLoader(file_path)
-        docs.extend(loader.load())
+        docs.extend(PyPDFLoader(path).load())
+
     elif file.endswith(".txt"):
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-            docs.append(Document(page_content=text))
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            docs.append(Document(page_content=f.read()))
+
     elif file.endswith(".csv"):
         rows = []
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            reader = csv.reader(f)
-            for row in reader:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for row in csv.reader(f):
                 rows.append(", ".join(row))
-        csv_text = "\n".join(rows)
-        docs.append(Document(page_content=csv_text))
+        docs.append(Document(page_content="\n".join(rows)))
 
-print(f"✅ Total documents loaded: {len(docs)}")
+print(f"✅ Loaded: {len(docs)} docs")
 
 # ----------------------------
-# SPLIT DOCUMENTS INTO CHUNKS
+# SPLIT
 # ----------------------------
 splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
 chunks = splitter.split_documents(docs)
-print(f"📄 Total chunks created: {len(chunks)}")
+
+print(f"📄 Chunks: {len(chunks)}")
 
 # ----------------------------
-# CREATE EMBEDDINGS & VECTOR DB
+# VECTOR DB
 # ----------------------------
 embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
 
@@ -94,185 +88,132 @@ db = Chroma(
 )
 
 if db._collection.count() == 0:
-    print("Creating vector database for first time...")
+    print("⚡ Creating vector DB...")
     for i in tqdm(range(0, len(chunks), BATCH_SIZE)):
-        batch = chunks[i:i + BATCH_SIZE]
-        db.add_documents(batch)
+        db.add_documents(chunks[i:i+BATCH_SIZE])
     db.persist()
-    print("Vector DB created successfully!")
 else:
-    print("Vector DB already exists. Skipping embedding.")
+    print("✅ Vector DB already exists")
 
 # ----------------------------
-# GREETING DETECTION
+# GREETING
 # ----------------------------
-GREETING_PATTERNS = [
-    r"\b(hi|hello|hey|hiya|howdy|greetings|good\s*(morning|afternoon|evening|night)|what'?s\s*up|sup|yo)\b",
-    r"\b(salut|bonjour|bonsoir|ciao|hola|namaste|salam|নমস্কার|হ্যালো|আসসালামুয়ালাইকুম)\b",
-    r"\b(how are you|how r u|how do you do|how's it going|how are things)\b",
-    r"\b(nice to meet|good to meet|pleased to meet)\b",
-    r"^\s*(ok|okay|alright|sure|thanks|thank you|thx|ty)\s*[!.?]*\s*$",
-]
-
-def is_greeting(text: str) -> bool:
-    """Check if the input is a greeting or small-talk."""
-    lower = text.lower().strip()
-    for pattern in GREETING_PATTERNS:
-        if re.search(pattern, lower, re.IGNORECASE):
-            return True
-    return False
+def is_greeting(text):
+    patterns = [
+        r"\b(hi|hello|hey|yo|salam|হ্যালো|আসসালামুয়ালাইকুম)\b",
+        r"\b(how are you|what's up|sup)\b"
+    ]
+    return any(re.search(p, text.lower()) for p in patterns)
 
 # ----------------------------
-# TOPIC CLASSIFICATION VIA LLM
+# CLASSIFY (GEMINI)
 # ----------------------------
-def classify_topic(question: str) -> dict:
-    """
-    Use GPT to:
-    1. Detect the language of the question
-    2. Correct grammar
-    3. Classify if it's manufacturing-related
-    Returns dict: {language, corrected_question, is_manufacturing}
-    """
+def classify_topic(question):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a smart language analyzer. Given a user message, respond ONLY in this JSON format:\n"
-                        '{"language": "<detected language name>", "corrected": "<grammar-corrected version in same language>", "is_manufacturing": <true|false>}\n\n'
-                        "Rules:\n"
-                        "- 'is_manufacturing' is true ONLY if the question is about: manufacturing, machining, CNC, welding, casting, milling, drilling, lathe, tolerances, assembly, industrial processes, metal cutting, quality control, engineering measurements.\n"
-                        "- 'is_manufacturing' is false for: general knowledge, coding, math, health, cooking, sports, entertainment, etc.\n"
-                        "- Correct grammar/spelling mistakes in 'corrected' field but keep the same language.\n"
-                        "- Do NOT add any explanation or extra text. Only pure JSON."
-                    )
-                },
-                {"role": "user", "content": question}
-            ],
-            max_tokens=150
+        prompt = f"""
+Return ONLY JSON:
+
+{{"language": "", "corrected": "", "is_manufacturing": true/false}}
+
+Rules:
+- Detect language
+- Fix grammar
+- Manufacturing topics only
+
+Input:
+{question}
+"""
+
+        res = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
         )
-        import json
-        raw = response.choices[0].message.content.strip()
+
+        raw = res.text.strip()
         raw = re.sub(r"```json|```", "", raw).strip()
+
         return json.loads(raw)
-    except Exception:
+
+    except:
         return {"language": "English", "corrected": question, "is_manufacturing": False}
 
 # ----------------------------
-# BOT FUNCTION
+# MAIN BOT
 # ----------------------------
-def ask_bot(question: str, history=None) -> str:
-    """
-    Answers manufacturing-related questions using OpenAI.
-    - Handles greetings naturally (like ChatGPT)
-    - Auto-corrects grammar
-    - Detects and responds in the user's language
-    - Refuses non-manufacturing questions politely
-    """
+def ask_bot(question, history=None):
 
-    # ── 1. Handle greetings / small talk ──────────────────────────────────────
+    # Greeting
     if is_greeting(question):
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a friendly Manufacturing AI Assistant. "
-                            "The user has greeted you or is making small talk. "
-                            "Respond warmly and naturally in the SAME language the user used. "
-                            "Introduce yourself briefly as a Manufacturing AI Assistant "
-                            "and invite them to ask their manufacturing question. "
-                            "Keep it short, friendly, and conversational — like ChatGPT."
-                        )
-                    },
-                    {"role": "user", "content": question}
-                ],
-                max_tokens=120
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return "Hello! 👋 I'm your Manufacturing AI Assistant. How can I help you today?"
+        prompt = f"""
+User greeted you.
 
-    # ── 2. Classify topic, detect language, correct grammar ───────────────────
-    classification = classify_topic(question)
-    language = classification.get("language", "English")
-    corrected_question = classification.get("corrected", question)
-    is_manufacturing = classification.get("is_manufacturing", False)
+Reply friendly, short, same language.
+Introduce yourself as Manufacturing AI.
 
-    # ── 3. Reject non-manufacturing questions ─────────────────────────────────
-    if not is_manufacturing:
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            f"You are a Manufacturing AI Assistant that ONLY answers manufacturing-related questions. "
-                            f"The user asked something unrelated to manufacturing. "
-                            f"Politely decline in {language} and remind them you can only help with manufacturing topics. "
-                            f"Be friendly, not rude. Keep it 1-2 sentences."
-                        )
-                    },
-                    {"role": "user", "content": question}
-                ],
-                max_tokens=100
-            )
-            return response.choices[0].message.content
-        except Exception:
-            return "I'm specialized in manufacturing topics only. Please ask me about machining, CNC, welding, casting, or other manufacturing processes! 🏭"
-
-    # ── 4. Get relevant context from vector DB ────────────────────────────────
-    results = db.similarity_search(corrected_question, k=3)
-    context = "\n\n".join([doc.page_content for doc in results]) if results else ""
-
-    # ── 5. Build conversation history ─────────────────────────────────────────
-    messages_payload = [
-        {
-            "role": "system",
-            "content": (
-                f"You are an expert Manufacturing AI Assistant specializing in industrial processes, "
-                f"machining, CNC, welding, casting, quality control, and engineering measurements. "
-                f"IMPORTANT: Always respond in {language} — the same language the user is using. "
-                f"Be clear, accurate, and professional. Use bullet points or numbered lists when helpful. "
-                f"If the context below is relevant, use it. Otherwise use your expert knowledge.\n\n"
-                f"Context from documents:\n{context}"
-            )
-        }
-    ]
-
-    # Add conversation history
-    if history:
-        for msg in history[:-1]:  # Exclude the last message (current question)
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role in ("user", "assistant") and content:
-                messages_payload.append({"role": role, "content": content})
-
-    # Add the corrected current question
-    messages_payload.append({"role": "user", "content": corrected_question})
-
-    # ── 6. Query OpenAI ───────────────────────────────────────────────────────
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages_payload,
-            max_tokens=500
+User: {question}
+"""
+        res = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
         )
-        answer = response.choices[0].message.content
+        return res.text
 
-        # Show grammar correction note if question was corrected
-        if corrected_question.strip().lower() != question.strip().lower():
-            answer = f"*(Auto-corrected: \"{corrected_question}\")*\n\n{answer}"
+    # Classification
+    cls = classify_topic(question)
+    lang = cls["language"]
+    corrected = cls["corrected"]
+    is_manu = cls["is_manufacturing"]
 
-        return auto_compute_numbers(answer)
+    # Reject
+    if not is_manu:
+        prompt = f"""
+User asked non-manufacturing question.
 
-    except Exception as e:
-        err_msg = str(e)
-        if "insufficient_quota" in err_msg or "RateLimitError" in err_msg:
-            return "⚠️ API quota exceeded or too many requests. Please try again later."
-        return f"⚠️ An error occurred: {err_msg}"
+Politely refuse in {lang} in 1-2 lines.
+
+User: {question}
+"""
+        res = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        return res.text
+
+    # Retrieve context
+    results = db.similarity_search(corrected, k=3)
+    context = "\n\n".join([doc.page_content for doc in results])
+
+    # History
+    history_text = ""
+    if history:
+        for msg in history:
+            history_text += f"{msg['role']}: {msg['content']}\n"
+
+    # Final prompt
+    prompt = f"""
+You are a Manufacturing AI expert.
+
+Language: {lang}
+
+Context:
+{context}
+
+Conversation:
+{history_text}
+
+User: {corrected}
+
+Give clear structured answer.
+"""
+
+    res = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
+
+    answer = res.text
+
+    if corrected.lower().strip() != question.lower().strip():
+        answer = f'(Auto-corrected: "{corrected}")\n\n' + answer
+
+    return auto_compute_numbers(answer)
