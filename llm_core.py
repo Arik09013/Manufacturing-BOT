@@ -30,8 +30,8 @@ client = genai.Client(api_key=api_key)
 # ----------------------------
 # CONFIG
 # ----------------------------
-pdf_folder = "E:/Ai/manufacturing_docs"
-vector_db_dir = "E:/Ai/vector_db"
+pdf_folder = "E:/Projects/Ai/manufacturing_docs"
+vector_db_dir = "E:/Projects/Ai/vector_db"
 BATCH_SIZE = 500
 
 # ----------------------------
